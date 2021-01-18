@@ -22,6 +22,7 @@ package org.elasticsearch.common.xcontent.smile;
 import com.fasterxml.jackson.core.JsonEncoding;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.dataformat.smile.SmileConstants;
 import com.fasterxml.jackson.dataformat.smile.SmileFactory;
 import com.fasterxml.jackson.dataformat.smile.SmileGenerator;
 import org.elasticsearch.common.xcontent.DeprecationHandler;
@@ -88,6 +89,7 @@ public class SmileXContent implements XContent {
     @Override
     public XContentParser createParser(NamedXContentRegistry xContentRegistry,
             DeprecationHandler deprecationHandler, InputStream is) throws IOException {
+        checkSmileHeader(is);
         return new SmileXContentParser(xContentRegistry, deprecationHandler, smileFactory.createParser(is));
     }
 
@@ -107,5 +109,42 @@ public class SmileXContent implements XContent {
     public XContentParser createParser(NamedXContentRegistry xContentRegistry,
             DeprecationHandler deprecationHandler, Reader reader) throws IOException {
         return new SmileXContentParser(xContentRegistry, deprecationHandler, smileFactory.createParser(reader));
+    }
+
+    private void checkSmileHeader(InputStream is) throws IOException {
+        if (is.markSupported() == false) {
+            throw new IllegalArgumentException("Cannot check smile header without mark/reset support on " + is.getClass());
+        }
+        is.mark(Integer.MAX_VALUE);
+        try {
+            // scan until we find the first non-whitespace character or the end of the stream
+            int current;
+            do {
+                current = is.read();
+                if (current == -1) {
+                    throw new IllegalArgumentException("Input does not start with Smile format header -- can not parse");
+                }
+            } while (Character.isWhitespace((char) current));
+            byte firstByte = (byte) current;
+            if(firstByte != SmileConstants.HEADER_BYTE_1){
+                throw new IllegalArgumentException("Input does not start with Smile format header (first byte = 0x"
+                    +Integer.toHexString(firstByte & 0xFF)+") -- rather, it starts with '"+((char) firstByte)
+                    +"' (plain JSON input?) -- can not parse");
+            }
+            byte secondByte = (byte) is.read();
+            if(secondByte != SmileConstants.HEADER_BYTE_2){
+                throw new IllegalArgumentException("Input does not start with Smile format header (first byte = 0x"
+                    +Integer.toHexString(secondByte & 0xFF)+") -- rather, it starts with '"+((char) secondByte)
+                    +"' (plain JSON input?) -- can not parse"); //todo: fix message?
+            }
+            byte thirdByte = (byte) is.read();
+            if(thirdByte != SmileConstants.HEADER_BYTE_3){
+                throw new IllegalArgumentException("Input does not start with Smile format header (first byte = 0x"
+                    +Integer.toHexString(thirdByte & 0xFF)+") -- rather, it starts with '"+((char) thirdByte)
+                    +"' (plain JSON input?) -- can not parse");//todo: fix message?
+            }
+        } finally {
+            is.reset();
+        }
     }
 }

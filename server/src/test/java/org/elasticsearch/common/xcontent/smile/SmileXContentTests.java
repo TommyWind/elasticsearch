@@ -20,12 +20,19 @@
 package org.elasticsearch.common.xcontent.smile;
 
 import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.dataformat.smile.SmileFactory;
 
+import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.xcontent.BaseXContentTestCase;
+import org.elasticsearch.common.xcontent.DeprecationHandler;
+import org.elasticsearch.common.xcontent.NamedXContentRegistry;
 import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.common.xcontent.json.JsonXContent;
 
 import java.io.ByteArrayOutputStream;
+import java.util.Map;
 
 public class SmileXContentTests extends BaseXContentTestCase {
 
@@ -38,5 +45,19 @@ public class SmileXContentTests extends BaseXContentTestCase {
         ByteArrayOutputStream os = new ByteArrayOutputStream();
         JsonGenerator generator = new SmileFactory().createGenerator(os);
         doTestBigInteger(generator, os);
+    }
+
+    public void testIncompatibleStreamTypes() throws Exception {
+        final Map<String, Object> map = Map.of("foo", "bar");
+        final BytesReference jsonBytes = BytesReference.bytes(JsonXContent.contentBuilder().map(map));
+        expectThrows(IllegalArgumentException.class, () -> {
+            SmileXContent.smileXContent.createParser(
+                NamedXContentRegistry.EMPTY, DeprecationHandler.IGNORE_DEPRECATIONS, jsonBytes.streamInput()).map();
+        });
+        final BytesRef bytes = jsonBytes.toBytesRef();
+        expectThrows(JsonParseException.class, () -> {
+            SmileXContent.smileXContent.createParser(
+                NamedXContentRegistry.EMPTY, DeprecationHandler.IGNORE_DEPRECATIONS, bytes.bytes, bytes.offset, bytes.length).map();
+        });
     }
 }
