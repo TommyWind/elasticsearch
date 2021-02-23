@@ -12,12 +12,14 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.index.IndexWriter;
 import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.action.StepListener;
 import org.elasticsearch.action.admin.indices.create.CreateIndexClusterStateUpdateRequest;
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
 import org.elasticsearch.action.admin.indices.stats.IndexShardStats;
 import org.elasticsearch.action.admin.indices.stats.IndicesStatsAction;
 import org.elasticsearch.action.admin.indices.stats.IndicesStatsRequest;
 import org.elasticsearch.action.admin.indices.stats.IndicesStatsRequestBuilder;
+import org.elasticsearch.action.admin.indices.stats.IndicesStatsResponse;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.master.TransportMasterNodeAction;
 import org.elasticsearch.client.Client;
@@ -80,7 +82,6 @@ public class TransportResizeAction extends TransportMasterNodeAction<ResizeReque
     protected void masterOperation(Task task, final ResizeRequest resizeRequest, final ClusterState state,
                                    final ActionListener<ResizeResponse> listener) {
 
-        // there is no need to fetch docs stats for split but we keep it simple and do it anyway for simplicity of the code
         final String sourceIndex = indexNameExpressionResolver.resolveDateMathExpression(resizeRequest.getSourceIndex());
         final String targetIndex = indexNameExpressionResolver.resolveDateMathExpression(resizeRequest.getTargetIndexRequest().index());
 
@@ -94,25 +95,27 @@ public class TransportResizeAction extends TransportMasterNodeAction<ResizeReque
             .setDocs(true).setStore(true);
         IndicesStatsRequest statsRequest = statsRequestBuilder.request();
         statsRequest.setParentTask(clusterService.localNode().getId(), task.getId());
-        // TODO: only fetch indices stats for shrink type resize requests
-        client.execute(IndicesStatsAction.INSTANCE, statsRequest,
-            ActionListener.delegateFailure(listener, (delegatedListener, indicesStatsResponse) -> {
-                final CreateIndexClusterStateUpdateRequest updateRequest;
-                try {
-                    StoreStats indexStoreStats = indicesStatsResponse.getPrimaries().store;
-                    updateRequest = prepareCreateIndexRequest(resizeRequest, sourceMetadata, indexStoreStats, i -> {
-                        IndexShardStats shard = indicesStatsResponse.getIndex(sourceIndex).getIndexShards().get(i);
-                        return shard == null ? null : shard.getPrimary().getDocs();
-                    }, targetIndex);
-                } catch (Exception e) {
-                    delegatedListener.onFailure(e);
-                    return;
-                }
-                createIndexService.createIndex(
-                    updateRequest, delegatedListener.map(
-                        response -> new ResizeResponse(response.isAcknowledged(), response.isShardsAcknowledged(), updateRequest.index()))
-                );
-            }));
+
+        final StepListener<IndicesStatsResponse> stepListener = new StepListener<>();
+        if (resizeRequest.getResizeType() == ResizeType.SHRINK) {
+            client.execute(IndicesStatsAction.INSTANCE, statsRequest, stepListener);
+        } else {
+            stepListener.onResponse(null);
+        }
+        stepListener.whenComplete(indicesStatsResponse -> {
+            final CreateIndexClusterStateUpdateRequest updateRequest;
+            StoreStats indexStoreStats = indicesStatsResponse == null ? null : indicesStatsResponse.getPrimaries().store;
+            updateRequest = prepareCreateIndexRequest(resizeRequest, sourceMetadata, indexStoreStats, i -> {
+                assert resizeRequest.getResizeType() == ResizeType.SHRINK;
+                assert indicesStatsResponse != null;
+                IndexShardStats shard = indicesStatsResponse.getIndex(sourceIndex).getIndexShards().get(i);
+                return shard == null ? null : shard.getPrimary().getDocs();
+            }, targetIndex);
+            createIndexService.createIndex(
+                updateRequest, listener.map(
+                    response -> new ResizeResponse(response.isAcknowledged(), response.isShardsAcknowledged(), updateRequest.index()))
+            );
+        }, listener::onFailure);
     }
 
     // static for unittesting this method
